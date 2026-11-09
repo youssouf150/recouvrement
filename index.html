@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0a0c10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Recouvrement">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Recouvrement</title>
+<script src="https://cdn.tailwindcss.com/3.4.17" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/lucide-react@0.383.0/dist/umd/lucide-react.min.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.7/babel.min.js" crossorigin="anonymous"></script>
+<style>
+html,body{margin:0;background:#0a0c10;color:#fff;font-family:system-ui,-apple-system,sans-serif}
+#shell{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;z-index:200;background:#0a0c10}
+#shell .box{width:100%;max-width:340px;text-align:center}
+#shell h1{font-size:24px;letter-spacing:.03em;margin:0 0 22px;background:linear-gradient(135deg,#ffb066,#ff8a3d 55%,#ff6f61);-webkit-background-clip:text;background-clip:text;color:transparent}
+#shell input{width:100%;box-sizing:border-box;margin-bottom:12px;padding:14px;border-radius:14px;border:1px solid rgba(255,255,255,.13);background:rgba(255,255,255,.07);color:#fff;font-size:16px}
+#shell button{width:100%;padding:14px;border:0;border-radius:14px;background:linear-gradient(135deg,#ffb066,#ff8a3d 55%,#ff6f61);color:#0a0c10;font-weight:700;font-size:15px}
+#shell p{color:#b7c0d1;font-size:13px;line-height:1.5;min-height:18px}
+#rc-bar{display:none;position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:150;background:#14171d;border:1px solid rgba(255,157,66,.5);color:#fff;padding:10px 14px;border-radius:14px;font:13px system-ui;width:max-content;max-width:92vw}
+#rc-bar button{margin-left:8px;border:0;border-radius:10px;padding:6px 12px;background:#ff9d42;color:#0a0c10;font-weight:700}
+#rc-st{position:fixed;left:8px;bottom:2px;z-index:30;font:10px system-ui;color:#78849a}
+#rc-st a{color:#8ab8ff}
+/* Écran d'ordinateur */
+@media (min-width:1024px){
+  .max-w-lg.pb-28{max-width:1040px!important}
+  .view-fade .flex.flex-col.gap-2\.5,.view-fade .flex.flex-col.gap-2{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
+  .sheet-overlay{align-items:center!important}
+  .sheet-panel{max-width:540px!important;border-radius:24px!important;border-bottom:1px solid rgba(255,255,255,.22)!important}
+}
+@media (min-width:1440px){
+  .max-w-lg.pb-28{max-width:1240px!important}
+  .view-fade .flex.flex-col.gap-2\.5{grid-template-columns:repeat(3,minmax(0,1fr))}
+}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<div id="shell"></div>
+<div id="rc-bar"></div>
+<div id="rc-st"></div>
+
+<script type="module">
+import {initializeApp} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-app.js";
+import {getAuth,onAuthStateChanged,signInWithEmailAndPassword,signOut} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-auth.js";
+import {initializeFirestore,persistentLocalCache,persistentMultipleTabManager,collection,doc,getDoc,getDocs,getDocsFromCache,onSnapshot,writeBatch} from "https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js";
+
+const app=initializeApp({
+  apiKey:"AIzaSyC7Ngt39G9NqHsZhq6l6zzNxmQM43d7i-4",
+  authDomain:"recouvrement-f2348.firebaseapp.com",
+  projectId:"recouvrement-f2348",
+  storageBucket:"recouvrement-f2348.firebasestorage.app",
+  messagingSenderId:"571112131653",
+  appId:"1:571112131653:web:f3738babea31880cb4272c"
+});
+const auth=getAuth(app);
+const db=initializeFirestore(app,{localCache:persistentLocalCache({tabManager:persistentMultipleTabManager()})});
+
+const $=s=>document.querySelector(s);
+const DEV=localStorage.getItem('rc-dev')||(()=>{const d=Math.random().toString(36).slice(2,10);localStorage.setItem('rc-dev',d);return d})();
+const CH=300000;
+let uid=null,metas=new Map(),mem=new Map(),dirty=new Set(),timers={},pending=0,remote=false,booted=false;
+const ref=(c,id)=>doc(db,'users',uid,c,id);
+
+function status(){
+  const s=$('#rc-st');if(!s||!uid)return;
+  s.innerHTML=(!navigator.onLine?'Hors ligne':pending?'Synchronisation…':'Synchronisé')+' · <a href="#" id="rc-out">Déconnexion</a>';
+  $('#rc-out').onclick=e=>{e.preventDefault();signOut(auth).then(()=>location.reload())};
+}
+
+/* Stockage de l'app : même interface que celle de Claude, mais enregistré dans Firebase (copie locale hors ligne incluse) */
+function up(k){
+  dirty.delete(k);
+  const v=mem.get(k);if(v===undefined)return;
+  const n=Math.max(1,Math.ceil(v.length/CH)),old=(metas.get(k)||{}).n||0,b=writeBatch(db);
+  for(let i=0;i<n;i++)b.set(ref('kvc',`${k}_c${i}`),{v:v.slice(i*CH,(i+1)*CH)});
+  for(let i=n;i<old;i++)b.delete(ref('kvc',`${k}_c${i}`));
+  const meta={n,dev:DEV,ts:Date.now()};
+  b.set(ref('kv',k),meta);metas.set(k,meta);
+  pending++;status();
+  b.commit().catch(console.error).finally(()=>{pending--;status()});
+}
+function flush(){[...dirty].forEach(k=>{clearTimeout(timers[k]);up(k)})}
+window.storage={
+  async get(k){
+    if(mem.has(k))return{key:k,value:mem.get(k),shared:false};
+    const m=metas.get(k);if(!m)return null;
+    const parts=await Promise.all(Array.from({length:m.n},(_,i)=>getDoc(ref('kvc',`${k}_c${i}`))));
+    if(parts.some(p=>!p.exists()))throw new Error('donnée incomplète');
+    const v=parts.map(p=>p.data().v).join('');
+    mem.set(k,v);return{key:k,value:v,shared:false};
+  },
+  async set(k,v){mem.set(k,v);dirty.add(k);clearTimeout(timers[k]);timers[k]=setTimeout(()=>up(k),400);return{key:k,value:v,shared:false}},
+  async delete(k){mem.delete(k);return{key:k,deleted:true,shared:false}},
+  async list(p){return{keys:[...new Set([...metas.keys(),...mem.keys()])].filter(k=>k.startsWith(p||'')),prefix:p,shared:false}}
+};
+
+const timeout=(p,ms)=>Promise.race([p,new Promise((_,r)=>setTimeout(()=>r(new Error('timeout')),ms))]);
+async function hydrate(){
+  const c=collection(db,'users',uid,'kv');let s;
+  try{s=navigator.onLine?await timeout(getDocs(c),8000):await getDocsFromCache(c)}catch(e){s=await getDocsFromCache(c)}
+  if(s.empty&&s.metadata.fromCache)throw new Error('vide hors ligne');
+  metas=new Map(s.docs.map(d=>[d.id,d.data()]));
+}
+function listen(){
+  let first=true;
+  onSnapshot(collection(db,'users',uid,'kv'),s=>{
+    if(first){first=false;return}
+    let r=false;
+    s.docChanges().forEach(ch=>{if(ch.type!=='removed'&&!ch.doc.metadata.hasPendingWrites&&ch.doc.data().dev!==DEV)r=true});
+    if(r){remote=true;const b=$('#rc-bar');b.style.display='block';b.innerHTML='Données mises à jour depuis un autre appareil. <button id="rc-r">Actualiser</button>';$('#rc-r').onclick=()=>location.reload()}
+  });
+}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')flush();else if(remote)location.reload()});
+addEventListener('pagehide',flush);addEventListener('online',status);addEventListener('offline',status);
+
+/* Charge ton code d'origine (app.jsx) sans le modifier */
+async function bootApp(){
+  const res=await fetch('app.jsx',{cache:'no-cache'});
+  if(!res.ok)throw new Error('app.jsx introuvable');
+  const src=await res.text();
+  const names=(src.match(/import\s*\{([^}]*)\}\s*from\s*['"]lucide-react['"]/)||[])[1]||'';
+  const icons=names.split(',').map(s=>s.trim()).filter(Boolean).map(s=>s.replace(/^(\S+)\s+as\s+(\S+)$/,'$1: $2'));
+  const body=src.replace(/^import[^\n]*\n/gm,'').replace(/export\s+default\s+function\s+App/,'function App');
+  const wrapped=`(function(){const {useState,useEffect,useMemo,useCallback,useRef}=React;const L=new Proxy(window.lucideReact||{},{get:(t,k)=>t[k]||(()=>null)});const {${icons.join(',')}}=L;\n${body}\nwindow.__App=App;})();`;
+  let h=0;for(let i=0;i<wrapped.length;i++)h=(h*31+wrapped.charCodeAt(i))|0;
+  const ck='rc-js-'+h;let out=localStorage.getItem(ck);
+  if(!out){
+    out=Babel.transform(wrapped,{presets:['react']}).code;
+    Object.keys(localStorage).filter(k=>k.startsWith('rc-js-')).forEach(k=>localStorage.removeItem(k));
+    try{localStorage.setItem(ck,out)}catch(e){}
+  }
+  (0,eval)(out);
+  ReactDOM.createRoot($('#root')).render(React.createElement(window.__App));
+}
+
+function login(){
+  const sh=$('#shell');sh.style.display='flex';
+  sh.innerHTML='<form class="box" id="lf"><h1>RECOUVREMENT</h1><input id="em" type="email" placeholder="E-mail" autocomplete="username" required><input id="pw" type="password" placeholder="Mot de passe" autocomplete="current-password" required><button>Se connecter</button><p id="er"></p></form>';
+  $('#lf').onsubmit=async e=>{
+    e.preventDefault();$('#er').textContent='Connexion…';
+    try{await signInWithEmailAndPassword(auth,$('#em').value.trim(),$('#pw').value)}
+    catch(x){$('#er').textContent='E-mail ou mot de passe incorrect, ou pas de réseau.'}
+  };
+}
+function note(t,retry){
+  const sh=$('#shell');sh.style.display='flex';
+  sh.innerHTML='<div class="box"><h1>RECOUVREMENT</h1><p>'+t+'</p>'+(retry?'<button id="rt">Réessayer</button>':'')+'</div>';
+  if(retry)$('#rt').onclick=()=>location.reload();
+}
+
+onAuthStateChanged(auth,async u=>{
+  if(!u){uid=null;login();return}
+  if(booted)return;
+  uid=u.uid;note('Chargement…');
+  try{await hydrate()}catch(e){note("Première ouverture sur cet appareil : une connexion internet est nécessaire pour récupérer tes données.",true);return}
+  booted=true;listen();
+  try{await bootApp()}catch(e){console.error(e);note("Impossible de démarrer l'application. Vérifie que le fichier app.jsx est bien dans le dépôt GitHub.",true);return}
+  $('#shell').style.display='none';status();
+});
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js');
+</script>
+</body>
+</html>
